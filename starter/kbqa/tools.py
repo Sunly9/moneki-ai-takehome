@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 from datetime import date, timedelta
@@ -12,6 +13,9 @@ from typing import Any, Optional
 from .cleaning import open_readonly
 
 METRIC_FIELDS = ("net_revenue", "refund_amount", "orders", "aov", "qty")
+
+#: 契约 §5：`data_evidence.sql` 只能是 `SELECT` 或 `WITH` 开头的只读查询。
+_READONLY_SQL = re.compile(r"^(select|with)\b", re.I)
 
 
 def yuan(cents: int) -> float:
@@ -50,7 +54,9 @@ class DataTools:
             self._local.conn = None
 
     def _where(self, start: str, end: str, store_id=None, product_id=None) -> tuple[str, list]:
-        clause = ["date >= ?", "date < ?"]
+        # 契约 §2/§3：start、end 是闭区间，两端都要含进来。
+        # 写成 `date < end` 会把区间最后一天整天漏掉。
+        clause = ["date >= ?", "date <= ?"]
         params: list[Any] = [start, end]
         if store_id:
             clause.append("store_id = ?")
@@ -72,11 +78,21 @@ class DataTools:
         return int(self.conn.execute("SELECT COUNT(*) FROM sales_clean").fetchone()[0])
 
     def run_sql(self, sql: str) -> dict:
-        """执行一条 SQL。工具覆盖不到的查法，让模型自己写。"""
-        cursor = self.conn.execute(sql)
+        """执行一条**只读** SQL。工具覆盖不到的查法，让模型自己写。
+
+        契约要求「数据库不能有任何改动」，所以这里只放行单条 SELECT / WITH：
+        连接本身也开了 `PRAGMA query_only`，两道闸一起挡。
+        """
+        statement = (sql or "").strip().rstrip(";").strip()
+        if not _READONLY_SQL.match(statement):
+            raise ValueError("只允许 SELECT 或 WITH 开头的只读查询")
+        if ";" in statement:
+            raise ValueError("一次只允许执行一条语句")
+        if not re.search(r"\bfrom\b", statement, re.I):
+            raise ValueError("查询里必须有 FROM，常量语句不算证据")
+        cursor = self.conn.execute(statement)
         rows = [dict(row) for row in cursor.fetchall()] if cursor.description else []
-        self.conn.commit()
-        return {"sql": sql, "rows": rows[:50], "row_count": len(rows)}
+        return {"sql": statement, "rows": rows[:50], "row_count": len(rows)}
 
     def stores(self) -> list[dict]:
         return [dict(r) for r in self.conn.execute("SELECT * FROM stores ORDER BY store_id")]
@@ -91,21 +107,32 @@ class DataTools:
     # -- 指标 -------------------------------------------------------------------
 
     def query_metrics(self, start: str, end: str, store_id=None, product_id=None) -> dict:
-        """营业额、退款、订单数、客单价、销量。客单价 = 营业额 ÷ 明细行数。"""
+        """KB-001 §4 的五个指标。
+
+        原先这里是 **v2 的旧口径**（KB-002），三处都和现行手册相反：
+        - 退款行被 `is_refund = 0` 排掉，而 v3 §4 明确「退款行计入净营业额」；
+        - 订单数用 `COUNT(*)` 数明细行，而 v3 要求「销售行中不同 order_id 的个数」；
+        - 客单价的分母跟着变成明细行数，多行订单被算成多单，客单价偏低。
+        退款金额还被硬编码成 0。
+        """
         where, params = self._where(start, end, store_id, product_id)
-        # 退款行不是营业，直接排掉，省得把营业额算少了。
         row = self.conn.execute(
             """
             SELECT COALESCE(SUM(amount_cents), 0),
-                   0,
-                   COUNT(*),
-                   COALESCE(SUM(qty), 0)
-            FROM sales_clean WHERE %s AND is_refund = 0
+                   COALESCE(-SUM(CASE WHEN amount_cents < 0 THEN amount_cents ELSE 0 END), 0),
+                   COUNT(DISTINCT CASE WHEN amount_cents > 0 THEN order_id END),
+                   COALESCE(SUM(CASE WHEN amount_cents > 0 THEN qty
+                                     WHEN amount_cents < 0 THEN -qty
+                                     ELSE 0 END), 0)
+            FROM sales_clean WHERE %s
             """
             % where,
             params,
         ).fetchone()
-        net_cents, refund_cents, orders, qty = int(row[0]), int(row[1]), int(row[2]), int(row[3])
+        net_cents = int(row[0])
+        refund_cents = int(row[1])
+        orders = int(row[2])
+        qty = int(row[3])
         aov = round2(Decimal(net_cents) / 100 / orders) if orders else None
         return {
             "start": start,
@@ -113,7 +140,7 @@ class DataTools:
             "store_id": store_id,
             "product_id": product_id,
             "net_revenue": yuan(net_cents),
-            "refund_amount": yuan(-refund_cents),
+            "refund_amount": yuan(refund_cents),
             "orders": orders,
             "aov": aov,
             "qty": qty,
@@ -126,7 +153,7 @@ class DataTools:
             """
             SELECT date,
                    COALESCE(SUM(amount_cents), 0),
-                   COUNT(DISTINCT CASE WHEN is_refund=0 THEN order_id END)
+                   COUNT(DISTINCT CASE WHEN amount_cents > 0 THEN order_id END)
             FROM sales_clean WHERE %s GROUP BY date
             """
             % where,
@@ -156,9 +183,11 @@ class DataTools:
         rows = self.conn.execute(
             """
             SELECT payment,
-                   COUNT(DISTINCT CASE WHEN is_refund=0 THEN order_id END),
+                   COUNT(DISTINCT CASE WHEN amount_cents > 0 THEN order_id END),
                    COALESCE(SUM(amount_cents), 0),
-                   COALESCE(SUM(CASE WHEN is_refund=0 THEN qty ELSE -qty END), 0)
+                   COALESCE(SUM(CASE WHEN amount_cents > 0 THEN qty
+                                     WHEN amount_cents < 0 THEN -qty
+                                     ELSE 0 END), 0)
             FROM sales_clean WHERE %s GROUP BY payment
             """
             % where,
@@ -191,8 +220,10 @@ class DataTools:
             """
             SELECT s.product_id, p.product_name, p.product_category,
                    COALESCE(SUM(s.amount_cents), 0),
-                   COUNT(DISTINCT CASE WHEN s.is_refund=0 THEN s.order_id END),
-                   COALESCE(SUM(CASE WHEN s.is_refund=0 THEN s.qty ELSE -s.qty END), 0)
+                   COUNT(DISTINCT CASE WHEN s.amount_cents > 0 THEN s.order_id END),
+                   COALESCE(SUM(CASE WHEN s.amount_cents > 0 THEN s.qty
+                                     WHEN s.amount_cents < 0 THEN -s.qty
+                                     ELSE 0 END), 0)
             FROM sales_clean s LEFT JOIN products p ON p.product_id = s.product_id
             WHERE %s GROUP BY s.product_id ORDER BY 4 DESC
             """

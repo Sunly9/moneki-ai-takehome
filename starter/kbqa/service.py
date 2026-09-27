@@ -67,7 +67,9 @@ class Service:
         return {
             "status": "ok",
             "llm_mode": self.settings.llm_mode,
-            "kb_docs": sum(1 for path in self.settings.kb_dir.rglob("*") if path.is_file()),
+            # 契约 §1：数的是**实际进入索引的文档数**，不是目录里的文件数。
+            # `knowledge_base/README.md` 没有 KB 编号，不算文档，数文件会多报。
+            "kb_docs": len(self.index.docs_meta),
             "kb_chunks": len(self.index.chunks),
             "valid_sales_rows": self.tools.valid_sales_rows(),
             "today": self.settings.today.isoformat(),
@@ -153,7 +155,10 @@ class Service:
                 return Answer(answer="没有收到问题内容，请再说一次。", answer_type="clarify")
             history = self.sessions.history(session_id)
             started = time.perf_counter()
-            plan = self.planner.plan(question)
+            # 原先是 `self.planner.plan(question)` —— history 取出来了却没传下去，
+            # `Planner.plan(question, history=None)` 永远拿到空历史，
+            # 追问还原（“那 7 月呢？”）整条链失效，一律被判成“这个会话里没有上文”。
+            plan = self.planner.plan(question, history)
             trace.step("plan", plan.as_trace(), started=started)
             answer = self._run_engine(plan, trace, history)
             self.sessions.append(
@@ -167,10 +172,16 @@ class Service:
                 },
             )
             return answer
-        except Exception:  # noqa: BLE001 - 不管里面出什么事，接口都得给个像样的回答
+        except Exception as exc:  # noqa: BLE001 - 不管里面出什么事，接口都得给个像样的回答
+            # 契约 §5：接口照常 200，但**真实的错误原因必须留在 trace 和日志里**，
+            # 否则线上答错时无从查起。
+            trace.error("chat", exc)
+            trace.step("error", {"type": type(exc).__name__, "detail": str(exc)})
             return Answer(
-                answer="抱歉，我暂时无法回答。",
+                answer="抱歉，处理这个问题时出了内部错误，为了不给出没有依据的数字，这次先不回答。"
+                "真实原因已经记在 trace 里。",
                 answer_type="refusal",
+                notes=["内部异常：%s: %s" % (type(exc).__name__, exc)],
             )
 
     def _run_engine(self, plan, trace: Trace, history: list[dict]) -> Answer:
