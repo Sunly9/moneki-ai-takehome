@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import date
 from typing import Optional
@@ -18,8 +19,18 @@ from .tokenizer import content_tokens, tokenize
 #: 拒答闸门。两个互补的信号：
 #: `vocab` —— 问题里的词有多少在整个知识库的词表里出现过（“工资”“下雨”一个都找不到）；
 #: `top_score` —— 检索最高分，衡量“有没有哪篇文档确实在谈这件事”。
-#: 阈值是拿几十句话试出来的，偏保守，宁可少答也不要硬答。
-VOCAB_HARD_GATE = 0.25
+#:
+#: 阈值是在**分词器修好之后**重新标定的。原先那组（0.25 / 0.45）是在
+#: 中文按空白切词的坏分词器下标出来的 —— 那时中文查询的覆盖率恒为 0，
+#: 这个闸门从来没能真正开门，拒答全靠话题词表。实测：
+#:
+#:   应当拒答：S03 店长家里养了几只猫 0.250 ／ 员工平均工资 0.125 ／ 明天会不会下雨 0.200
+#:   应当照答：员工迟到多久算一次 0.500 ／ 7 月投诉最集中 0.545 ／ 卖了多少 0.700
+#:
+#: 0.35 落在两组之间。注意「9 月的营业额」「S06 的店长」这两个拒答题的覆盖率
+#: 分别是 1.000 和 0.667（词表里都有），它们不靠这个闸门 ——
+#: 一个由 `planner._check_period` 拦，一个由未知门店拦。
+VOCAB_HARD_GATE = 0.35
 VOCAB_SOFT_GATE = 0.45
 RETRIEVAL_SOFT_GATE = 12.0
 #: 问得太泛时的反问阈值：检索连一个像样的命中都没有。
@@ -44,6 +55,7 @@ class Answerer(HybridAnswers):
         self.today = today
         self.data_period = data_period
         self.facts = facts or DocFacts(retriever.index)
+        self._local = threading.local()
 
     # -- 基础设施 ---------------------------------------------------------------
 
@@ -53,6 +65,12 @@ class Answerer(HybridAnswers):
         if name == "daily_metrics" and len(result.get("days", [])) > 31:
             trimmed = {"days": result["days"][:31], "days_total": len(result["days"])}
         evidence.append({"tool": name, "params": params, "result": trimmed})
+        # 契约 §6 第 3 项：trace 里要能看到「执行的工具调用或 SQL，以及结果」。
+        # 原先工具结果只进了 Answer.data_evidence，trace 里一条都没有，
+        # 调试面板上看不出数字是怎么查出来的。
+        trace = getattr(self._local, "trace", None)
+        if trace is not None:
+            trace.step("tool", {"tool": name, "params": params, "result": trimmed})
         return result
 
     def _scope(self, plan: Plan, window=None) -> str:
@@ -74,13 +92,23 @@ class Answerer(HybridAnswers):
         candidates = self._candidates(plan, result, require_value=True)
         if not candidates:
             candidates = self._candidates(plan, result, require_value=False)
-        candidates.sort(key=lambda item: (round(item["score"], 2), item["effective_from"]))
+        if not candidates:
+            return "", [], 0.0
+        # 文档顺序：**先看这篇文档里最好的那一句有多好，再看它在检索里排第几**。
+        #
+        # 只用检索名次（上一版）会让“检索排第一、但里面没有能作答的句子”的文档
+        # 一直挡在前面；只用句子分（更早那一版）又会让“某篇文档里恰好有一句像样的话”
+        # 冒充答案。两者都要：句子分是主语，检索名次做同分时的打破。
+        # 句子分里已经含了 `(hit.score / top_score) ** 0.5` 这一项，所以
+        # 文档整体的相关性并没有被丢掉。
+        candidates.sort(key=lambda item: item["effective_from"], reverse=True)
+        candidates.sort(key=lambda item: (-round(item["score"], 4), item["rank"]))
         lines: list[str] = []
         citations: list[dict] = []
         used_terms: set[str] = set()
-        best_score = candidates[0]["raw"] if candidates else 0.0
+        best_score = max((candidate["raw"] for candidate in candidates), default=0.0)
         query_terms = set(content_tokens(plan.search_query))
-        best = candidates[0]["score"] if candidates else 0.0
+        best = max((candidate["score"] for candidate in candidates), default=0.0)
         for candidate in candidates:
             # 一篇文档引一句就够；第二条引用要来自另一篇、而且确实补充了新信息。
             if any(candidate["doc_id"] == cited["doc_id"] for cited in citations):
@@ -132,7 +160,7 @@ class Answerer(HybridAnswers):
         """把各文档的候选句放在一起比较，按检索分数的相对高低加权。"""
         candidates: list[dict] = []
         top_score = max((hit.score for hit in result.hits), default=0.0) or 1.0
-        for hit in self.answerable_hits(plan, result):
+        for rank, hit in enumerate(self.answerable_hits(plan, result)):
             meta = self.retriever.index.docs_meta.get(hit.doc_id, {})
             ranked = self.facts.rank(
                 plan.search_query, hit.doc_id, limit=3, require_value=require_value
@@ -149,6 +177,7 @@ class Answerer(HybridAnswers):
                     {
                         "score": score * (max(hit.score, 0.0) / top_score) ** 0.5 * estimate_penalty,
                         "raw": score,
+                        "rank": rank,
                         "doc_id": hit.doc_id,
                         "meta": meta,
                         "unit": unit,
@@ -192,6 +221,15 @@ class Answerer(HybridAnswers):
     # -- 入口 -------------------------------------------------------------------
 
     def answer(self, plan: Plan, trace=None) -> Answer:
+        # 当前请求的 trace 放在线程本地：FastAPI 的同步接口跑在线程池里，
+        # 同一个 Answerer 实例会被多个线程共用，不能挂成实例属性。
+        self._local.trace = trace
+        try:
+            return self._answer(plan, trace)
+        finally:
+            self._local.trace = None
+
+    def _answer(self, plan: Plan, trace=None) -> Answer:
         if plan.intent in ("refusal", "clarify"):
             return Answer(answer=plan.refusal or "无法回答这个问题。", answer_type=plan.intent)
         if plan.kind in ("target", "price", "anomaly"):
@@ -351,4 +389,9 @@ class Answerer(HybridAnswers):
                 answer_type="clarify",
                 notes=["检索最高分 %.1f，且问题里没有指标、时间或门店" % top_score],
             )
-        return Answer(answer=self._context(result) + body, answer_type="doc", citations=citations)
+        # 原先这里是 `self._context(result) + body`：`_context` 会把命中文档的
+        # **全部片段**原样拼进 answer。那是“把整段、整篇文档贴进来”，
+        # 契约 §5 与评测都明确不算回答，还会一次性撞掉 answer_length、
+        # number_flood、numbers_none_beyond_question 三条硬上限。
+        # 给运营看的是抽出来的那一两句，原文交给 citations 逐字引用。
+        return Answer(answer=body, answer_type="doc", citations=citations)

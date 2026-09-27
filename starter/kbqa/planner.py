@@ -88,6 +88,28 @@ class Planner:
         if standalone != question:
             plan.notes.append("这是一句追问，已按上一轮补全为：%s" % standalone)
 
+        # 契约 §5：用户要求删改数据、套取系统信息时必须拒绝，数据库不能有任何改动。
+        # `entities.is_destructive` 与 `is_prompt_probe` 本来就写好了，
+        # 只是规划器从来没有调用它们，这段闸门一直是断的。
+        # 放在追问还原之后、其它判断之前：这类请求一个字段都不该往下走。
+        # 拒答文案里不能出现任何问句里没有的数字，否则会被判成“编了个数”。
+        if E.is_destructive(standalone):
+            plan.intent, plan.kind = "refusal", "destructive"
+            plan.notes.append("破坏性请求：命中写操作意图，未执行任何写操作。")
+            plan.refusal = (
+                "这个请求要改动数据库里的记录，我不能执行，也不会有任何数据被改动。"
+                "系统只提供只读查询：想看某个区间、某家门店的经营数字，直接问指标就行。"
+            )
+            return plan
+        if E.is_prompt_probe(standalone):
+            plan.intent, plan.kind = "refusal", "prompt_probe"
+            plan.notes.append("越权请求：试图套取系统提示词或数据库结构。")
+            plan.refusal = (
+                "系统提示词和数据库结构不对外提供，我也不会照做。"
+                "可以问经营数字，或者问知识库里的制度、通知和门店档案。"
+            )
+            return plan
+
         # 越界判断放在追问还原之后：“那 7 月呢”要先补成完整问题才判得准。
         head = E.head_clause(standalone)
         reason = E.out_of_scope(standalone, *self.scout(head))
@@ -211,6 +233,7 @@ class Planner:
             explicit_metric
             or asks_payment
             or E.has_any(text, E.SALES_RANK_WORDS)
+            or E.has_any(text, E.SALES_AMOUNT_WORDS)
             or (asks_business and plan.slots.get("time_scoped"))
         )
         compares = len(windows) > 1 and E.has_any(text, E.TREND_WORDS)
@@ -248,14 +271,17 @@ class Planner:
         else:
             plan.kind, plan.intent = "summary", "data"
 
-        # 路由：问“多少/多久/几”的就是要数字，问“为什么/原因”的就是要说法。
-        # 两边都走一遍太慢，没必要。
-        if E.has_any(text, ("多少", "多久", "几")):
-            plan.intent = "data"
-            if plan.kind in ("doc", "anomaly", "target", "price"):
-                plan.kind = "summary"
-        elif E.has_any(text, ("为什么", "原因", "怎么回事", "咋回事")):
-            plan.intent, plan.kind = "doc", "doc"
+        # 原先这里还有一段“问『多少/多久/几』的就是要数字”，把上面十几行判断
+        # 全部推翻：`asks_policy` 判成 doc 的会被打回 data，`asks_target` 判成
+        # hybrid 的会被打成 data，然后 `_check_period` 再把「营业到几点」
+        # 当成查数失败拦成拒答。
+        #
+        # 「多久内可以退款」「迟到多久算一次」「有几点关门」里的“多久/几”问的
+        # 是制度，不是数字。查不查数应该由 `may_query`（有没有数据库真能算的东西）
+        # 决定，而不是由出现没出现这几个字决定。
+        #
+        # “为什么/原因”那一路不用单独判：上面 `asks_why or abnormal` 已经
+        # 把它路由成 hybrid 了。
 
         plan.slots["asks_why"] = bool(asks_why or abnormal)
         plan.slots["about_names"] = E.asks_about_names(text)

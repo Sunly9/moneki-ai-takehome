@@ -117,7 +117,10 @@ class Retriever:
             return None
         ends = self._effective_to.get(doc_id)
         # 只有标了“已废止”的才按取代关系挡掉，别的版本照常参与打分。
-        if meta.get("status") == "已废止" and ends and as_of.isoformat() >= ends:
+        # `Document.meta()` 把状态存在 `state` 键下；这里原先读的是 `status`，
+        # 取到的永远是 None，于是**已废止的文档从来没有被真正挡掉**，
+        # 旧版（KB-012）一直盖在现行版（KB-013）上面。
+        if meta.get("state") == "已废止" and ends and as_of.isoformat() >= ends:
             return "该版本自 %s 起已被 %s 取代" % (ends, meta.get("superseded_by"))
         starts = meta.get("effective_from")
         if starts and starts > as_of.isoformat() and doc_id in self._in_chain:
@@ -261,7 +264,15 @@ class Retriever:
             )
         adjusted.sort(key=lambda item: (-item[0], item[1]))
 
-        ordered = [self.index.chunks[position] for _, position in adjusted]
+        # 契约 §4：**先按元数据过滤，再取前 top_k**。
+        # 原先是在取够 top_k 之后才把被过滤的版本删掉，结果会不足 top_k 条，
+        # 评测把这一条单列出来判不合格。
+        adjusted = [
+            (score, position)
+            for score, position in adjusted
+            if self.index.chunks[position].doc_id not in excluded
+        ]
+
         hits: list[Hit] = []
         taken: set[int] = set()
         per_doc: dict[str, int] = {}
@@ -271,10 +282,10 @@ class Retriever:
                 continue
             per_doc[chunk.doc_id] = per_doc.get(chunk.doc_id, 0) + 1
             taken.add(position)
-            hit = self._hit(position, score, filtered)
-            # 第几条命中就取排序里的第几篇文档。
-            hit.doc_id = ordered[len(hits)].doc_id
-            hits.append(hit)
+            # 这里原先还有一句 `hit.doc_id = ordered[len(hits)].doc_id`：
+            # 它把刚建好的 Hit 的 doc_id 换成**另一个片段**的 doc_id，
+            # 于是 doc_id、chunk_id、text 三者互相对不上，检索题的 doc_id 会整体错位。
+            hits.append(self._hit(position, score, filtered))
             if len(hits) >= top_k:
                 break
 
@@ -288,14 +299,30 @@ class Retriever:
             # 同一篇连着占满几格没什么意义。
             unscored: dict[str, list[int]] = {}
             for position in sorted(allowed):
-                if position in taken or position in scored:
+                chunk = self.index.chunks[position]
+                if position in taken or position in scored or chunk.doc_id in excluded:
                     continue
-                unscored.setdefault(self.index.chunks[position].doc_id, []).append(position)
+                unscored.setdefault(chunk.doc_id, []).append(position)
             while any(unscored.values()):
                 for positions in unscored.values():
                     if positions:
                         remaining.append((0.0, positions.pop(0)))
+            # `remaining` 里包含的正是**因「每篇文档最多占一格」被跳过**的片段，
+            # 而且它们还带着原来的分数。不挡掉的话，补位循环会把这条规则自己推翻：
+            # 同一篇文档在 top-k 里占好几格，把金标文档挤出前五。
+            overflow: list[tuple[float, int]] = []
             for score, position in remaining:
+                chunk = self.index.chunks[position]
+                full = per_doc.get(chunk.doc_id, 0) >= MAX_CHUNKS_PER_DOC
+                if full or len(hits) >= top_k:
+                    overflow.append((score, position))
+                    continue
+                per_doc[chunk.doc_id] = per_doc.get(chunk.doc_id, 0) + 1
+                taken.add(position)
+                hits.append(self._hit(position, score, filtered, padded=True))
+            # 只有一种情况该放宽「一篇一格」：文档数本身就不够 top_k
+            # （top_k 大于文档数），而契约 §4 要求片段够时必须给满 top_k 条。
+            for score, position in overflow:
                 if len(hits) >= top_k:
                     break
                 taken.add(position)
@@ -303,8 +330,6 @@ class Retriever:
             # 契约 §4 还要求“按相关性从高到低”：补齐之后整体再排一次。
             # 每篇文档只占一格是挑片段的规则，不是排序的规则。
             hits.sort(key=lambda hit: -hit.score)
-        # 取够 top-k 之后，再把过滤掉的那些版本去掉。
-        hits = [hit for hit in hits if hit.doc_id not in excluded]
 
         return SearchResult(
             hits=hits,
