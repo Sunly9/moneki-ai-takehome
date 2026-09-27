@@ -1,0 +1,65 @@
+name: ci
+
+# 第四关「评测即回归」：每次 push / PR 都跑一遍公开题库，
+# 分数掉下来就直接红，不用等人肉去发现。
+#
+# 所有实际动作都在 tools/run_eval.py 里（它负责起服务、等健康检查、
+# 跑题库、收服务），CI 只负责环境和断言，避免两处逻辑各写一份。
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PYTHONIOENCODING: utf-8
+  # 公开题库的分数下限。当前是 100.00（55/55 全绿）；
+  # 留 1 分余量，是为了让「答案措辞变化」这类无关紧要的抖动不至于把 CI 弄红，
+  # 但只要真掉了一道题就会失败。
+  MIN_SCORE: "99.0"
+
+jobs:
+  eval:
+    name: ${{ matrix.os }} / python 3.12
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows 与 Linux 都跑：这条题目的坑一大半在路径与编码上，
+        # 只在一个平台上验证等于没验证。
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        working-directory: starter
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: 重建清洗表与检索索引
+        working-directory: starter
+        run: python -m kbqa.rebuild
+
+      - name: 单元与回归测试
+        working-directory: starter
+        run: python -m pytest tests -q
+
+      - name: 跑公开题库并断言分数
+        run: python tools/run_eval.py --out eval_reports/ci
+
+      - name: 校验总分不低于下限
+        run: python tools/check_score.py eval_reports/ci --min-score ${{ env.MIN_SCORE }}
+
+      - name: 跑自补题库
+        run: python tools/run_eval.py --out eval_reports/ci-mine --questions eval/my_questions.jsonl
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-reports-${{ matrix.os }}
+          path: eval_reports/
