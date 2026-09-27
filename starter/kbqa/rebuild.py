@@ -18,8 +18,9 @@ def main() -> int:
     print("知识库目录：%s" % settings.kb_dir)
     report = build_clean_db(settings.source_db, settings.clean_db)
     print("清洗完成：%s" % json.dumps(report.as_dict(), ensure_ascii=False))
-    # 缓存还有效就不用重算，省几秒。
-    index = load_index(settings.kb_dir, settings.index_path)
+    # 重建命令的语义就是“重建”：即使缓存键碰巧还是命中，也强制重算一遍，
+    # 免得出现“跑了 rebuild 但索引其实没动”的情况（契约 §8）。
+    index = load_index(settings.kb_dir, settings.index_path, rebuild=True)
     print("索引完成：%d 篇文档，%d 个片段，缓存键 %s" % (
         len(index.docs_meta), len(index.chunks), index.key[:12]
     ))

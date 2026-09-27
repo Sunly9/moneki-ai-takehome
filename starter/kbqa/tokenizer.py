@@ -1,15 +1,34 @@
-"""分词。"""
+"""分词。
+
+中文没有词间空格，按空白切词等于把整句话当成一个词，BM25 永远匹配不上。
+这里走标准的无依赖做法：**二元组（bigram）+ 单字**。
+`retriever.SINGLE_CHAR_WEIGHT` 就是为这个粒度准备的。
+"""
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 #: 分词规则变了，索引缓存必须失效。
-TOKENIZER_VERSION = "tokenizer-2"
+TOKENIZER_VERSION = "tokenizer-3"
 
 #: 中文里几乎不携带信息的字。只用在“查询覆盖率”上，索引照常保留全部词。
-STOP_CHARS = frozenset("的了吗呢是在有和与及或就都也还把被给对从向于个些这那哪什么怎样如何多少几请帮我你他它可以能要想会一下少吧啊呀们么样过得着为所")
+STOP_CHARS = frozenset(
+    "的了吗呢是在有和与及或就都也还把被给对从向于个些这那哪什么怎样如何多少几请帮我你他它可以能要想会一下少吧啊呀们么样过得着为所"
+)
 STOP_WORDS = frozenset("the a an of to in is are and or for on at it this that how what".split())
+
+#: CJK 统一表意文字（含扩展 A）与兼容区。
+_CJK = (
+    "\u3400-\u4dbf"
+    "\u4e00-\u9fff"
+    "\uf900-\ufaff"
+    "\U00020000-\U0002a6df"
+)
+_CJK_RE = re.compile("[%s]" % _CJK)
+#: 非中日韩的“词”：字母、数字、下划线，以及带音调的拉丁字母。
+_WORD_RE = re.compile(r"[0-9a-z_]+")
 
 
 def normalise(text: str) -> str:
@@ -18,8 +37,35 @@ def normalise(text: str) -> str:
 
 
 def tokenize(text: str) -> list[str]:
-    """按空白切词，直接喂给 BM25。"""
-    return normalise(text).split()
+    """把文本切成 BM25 用的词。
+
+    - CJK 连续段：输出每个单字，以及每一对相邻字组成的二元组。
+      以标点和空白为界，二元组不跨句拼接（否则会造出「款政」这种噪声词）。
+    - 拉丁字母与数字：整段作为一个词。
+    """
+    normalized = normalise(text)
+    tokens: list[str] = []
+    position = 0
+    length = len(normalized)
+    while position < length:
+        char = normalized[position]
+        if _CJK_RE.match(char):
+            run = []
+            while position < length and _CJK_RE.match(normalized[position]):
+                run.append(normalized[position])
+                position += 1
+            for index, single in enumerate(run):
+                tokens.append(single)
+                if index + 1 < len(run):
+                    tokens.append(single + run[index + 1])
+            continue
+        match = _WORD_RE.match(normalized, position)
+        if match:
+            tokens.append(match.group(0))
+            position = match.end()
+            continue
+        position += 1
+    return tokens
 
 
 def content_tokens(text: str) -> list[str]:

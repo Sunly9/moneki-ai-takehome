@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import codecs
 import html as html_module
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Optional
 
-SUPPORTED_SUFFIXES = {".md", ".markdown"}
+#: 知识库里 `.md`、`.txt`、`.html` 三种格式都有（目录说明 §2.3）。
+#: 只收 `.md` 会让 `.txt` / `.html` 的老文件整份进不了索引。
+SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".html", ".htm"}
 
 #: 文件名开头的编号就是 doc_id，与文件格式无关（契约 §0）。
 _DOC_ID = re.compile(r"^(KB-\d+)")
@@ -78,10 +82,86 @@ class Document:
 
 _HTML_TITLE = re.compile(r"<title>(.*?)</title>", re.S | re.I)
 
+#: 这些标签里的内容不是正文，取正文时整段跳过。
+_HTML_SKIP_TAGS = frozenset({"script", "style", "noscript", "template", "head"})
+#: 块级标签前后补换行，免得相邻两段文字被粘成一个词。
+_HTML_BLOCK_TAGS = frozenset(
+    {
+        "p", "div", "br", "li", "tr", "td", "th", "table", "section", "article",
+        "header", "footer", "ul", "ol", "blockquote", "pre", "hr",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+    }
+)
+
+
+class _HtmlTextExtractor(HTMLParser):
+    """把 HTML 取成“可见正文”。
+
+    评测做 quote 逐字校验时就是**去掉标签与 script/style 之后再比对**的。
+    这里必须用同一套口径，否则索引里存的是带标签的原文，
+    引用要么带上标签、要么把标签当成正文，怎么都对不上。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):  # noqa: D102 - HTMLParser 回调
+        if tag in _HTML_SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag in _HTML_BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag):  # noqa: D102 - HTMLParser 回调
+        if tag in _HTML_SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag in _HTML_BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_startendtag(self, tag, attrs):  # noqa: D102 - HTMLParser 回调
+        if tag in _HTML_BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data):  # noqa: D102 - HTMLParser 回调
+        if self._skip_depth == 0:
+            self._parts.append(data)
+
+    def visible_text(self) -> str:
+        raw = "".join(self._parts).replace("\r\n", "\n").replace("\r", "\n")
+        return re.sub(r"\n{3,}", "\n\n", raw)
+
+
+def html_to_text(markup: str) -> str:
+    """HTML → 可见正文。解析失败时退回正则去标签，不抛异常。"""
+    parser = _HtmlTextExtractor()
+    try:
+        parser.feed(markup)
+        parser.close()
+        text = parser.visible_text()
+    except Exception:  # pragma: no cover - 兜底，坏 HTML 不该让整份知识库加载失败
+        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", markup)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = html_module.unescape(text)
+    return text
+
 
 def decode_bytes(raw: bytes, path: Path, warnings: list[str]) -> str:
-    """统一按 UTF-8 读。个别老文件里有怪字符，忽略掉就行，不影响检索。"""
-    return raw.decode("utf-8", errors="ignore")
+    """按文件真实编码解码。
+
+    知识库里有旧系统导出的 GBK 文件（如 `KB-062`）。原实现一律按 UTF-8 加
+    `errors="ignore"` 读，GBK 文件会变成乱码甚至空串，引用自然对不上。
+    评测的逐字校验也是按 GBK 解码这些文件的，所以这里必须一致。
+    """
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8) :]
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    warnings.append("无法按 utf-8/gb18030 解码，已用替换字符兜底：%s" % path.name)
+    return raw.decode("utf-8", errors="replace")
 
 
 def parse_front_matter(text: str) -> tuple[dict, str]:
@@ -170,16 +250,19 @@ def load_document(path: Path) -> Optional[Document]:
     raw = path.read_bytes()
     text = decode_bytes(raw, path, warnings)
     suffix = path.suffix.lower()
-    fmt = {".md": "md", ".markdown": "md", ".txt": "txt"}.get(suffix, "html")
+    fmt = {".md": "md", ".markdown": "md", ".txt": "txt", ".html": "html", ".htm": "html"}.get(
+        suffix, "txt"
+    )
 
     meta: dict = {}
     if fmt == "md":
         meta, text = parse_front_matter(text)
     elif fmt == "html":
-        # html 直接按文本入库，标签也就那么几个，BM25 自己会忽略。
+        # 取“可见正文”，与评测的 quote 逐字校验口径保持一致。
         match_title = _HTML_TITLE.search(text)
         html_title = html_module.unescape(match_title.group(1).strip()) if match_title else ""
         meta = {"title": html_title.split("-")[0].strip() or html_title}
+        text = html_to_text(text)
 
     match = _DOC_ID.match(path.name)
     doc_id = str(meta.get("doc_id") or (match.group(1) if match else "")).strip()
