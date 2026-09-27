@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -179,6 +181,24 @@ class LLMClient:
         if on_call is not None:
             record["took_ms"] = round((time.perf_counter() - started) * 1000, 1)
             on_call(record)
+        _log_traffic(record)
+
+
+#: 契约 §7.2 第 2 条「可观察」：必须能看到发给模型的完整请求。
+#: 把地址指向 `eval/llm_gateway.py proxy` 是一种办法；这里再提供一个自带的开关，
+#: 不经过代理也能把请求原文与原始响应写进 stderr（评审时想看就能看）。
+#: `LLM_TRACE=0` 或留空则不输出。
+TRACE_ENABLED = os.environ.get("LLM_TRACE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _log_traffic(record: dict) -> None:
+    if not TRACE_ENABLED:
+        return
+    try:
+        sys.stderr.write("[llm] %s\n" % json.dumps(record, ensure_ascii=False, default=str))
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 - 记日志失败绝不能影响问答
+        pass
 
 
 def _preview(text: str, limit: int = 4000) -> str:
