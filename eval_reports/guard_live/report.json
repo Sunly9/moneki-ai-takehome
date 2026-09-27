@@ -1,0 +1,107 @@
+{
+  "generated_at": "2026-09-27 18:06:12",
+  "base_url": "http://127.0.0.1:57504",
+  "questions_file": "E:\\springboot\\bishi\\moneki-ai-takehome\\eval\\public_questions.jsonl",
+  "kb_dir": "E:\\springboot\\bishi\\moneki-ai-takehome\\knowledge_base",
+  "kb_docs_loaded": 35,
+  "timeout": 180.0,
+  "only": "health",
+  "total": {
+    "points": 1.0,
+    "earned": 1.0,
+    "ratio": 1.0,
+    "questions": 1,
+    "passed": 1
+  },
+  "per_category": {
+    "health": {
+      "points": 1.0,
+      "earned": 1.0,
+      "questions": 1,
+      "passed": 1,
+      "ratio": 1.0
+    }
+  },
+  "latency_seconds": {
+    "median": 0.016,
+    "max": 0.016,
+    "total": 0.016
+  },
+  "health": {
+    "status": "ok",
+    "llm_mode": "live",
+    "kb_docs": 35,
+    "kb_chunks": 381,
+    "valid_sales_rows": 18290,
+    "today": "2026-09-01",
+    "data_period": {
+      "start": "2026-05-01",
+      "end": "2026-08-31"
+    },
+    "cleaning_report": {
+      "raw_rows": 18628,
+      "removed": {
+        "1_unparseable_date": 8,
+        "2_empty_amount": 150,
+        "3_qty_le_zero": 30,
+        "4_store_not_in_stores": 10,
+        "5_product_not_in_products": 40,
+        "6_duplicate_row": 100,
+        "note_unparseable_amount": 0
+      },
+      "kept_rows": 18290,
+      "kept_sales_rows": 18196,
+      "kept_refund_rows": 94,
+      "date_formats": {
+        "YYYY-MM-DD": 18400,
+        "DD-MM-YYYY": 80,
+        "YYYY/M/D": 140,
+        "bad": 6,
+        "missing": 2
+      }
+    },
+    "index_key": "d74265f4ac01",
+    "kb_warnings": [
+      "跳过没有 KB 编号的文件：README.md"
+    ]
+  },
+  "health_error": null,
+  "metrics_baselines": {},
+  "metrics_baseline_errors": {},
+  "kb_errors": [],
+  "questions": [
+    {
+      "id": "N01",
+      "category": "health",
+      "points": 1.0,
+      "earned": 1.0,
+      "passed": true,
+      "latency_seconds": 0.016,
+      "turns": [
+        {
+          "question": "GET /api/health",
+          "passed": true,
+          "latency_seconds": 0.016,
+          "answer_type": null,
+          "citations": [],
+          "trace_id": null,
+          "answer": "{\"status\": \"ok\", \"llm_mode\": \"live\", \"kb_docs\": 35, \"kb_chunks\": 381, \"valid_sales_rows\": 18290, \"today\": \"2026-09-01\", \"data_period\": {\"start\": \"2026-05-01\", \"end\": \"2026-08-31\"}, \"cleaning_report\": {\"raw_rows\": 18628, \"removed\": {\"1_unparseable_date\": 8, \"2_empty_amount\": 150, \"3_qty_le_zero\": 30, \"4_store_not_in_stores\": 10, \"5_product_not_in_products\": 40, \"6_duplicate_row\": 100, \"note_unparse…",
+          "checks": [
+            {
+              "name": "request",
+              "passed": true
+            },
+            {
+              "name": "expect.kb_docs",
+              "passed": true
+            },
+            {
+              "name": "expect.valid_sales_rows",
+              "passed": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
