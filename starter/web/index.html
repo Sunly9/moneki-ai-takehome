@@ -8,129 +8,166 @@
 </head>
 <body>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark">M</span>
-    <span class="brand-text">
-      <strong>经营看板</strong>
-      <small id="health-line" class="muted">正在读取服务状态…</small>
-    </span>
+<div class="shell">
+
+  <!-- ============================== 侧边导航 ============================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">M</span>
+      <span class="brand-text">
+        <strong>经营看板</strong>
+        <small>5 门店 · 混合问答</small>
+      </span>
+    </div>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab is-active" type="button" data-tab="dash">
+        <svg class="tab-ico" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2 13.5h12M3.5 13V8.5M6.5 13V4.5M9.5 13V6.5M12.5 13V9.5"
+                fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        <span>经营看板</span>
+      </button>
+      <button class="tab" type="button" data-tab="qa">
+        <svg class="tab-ico" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"
+                fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+        <span>问答</span>
+      </button>
+      <button class="tab" type="button" data-tab="debug">
+        <svg class="tab-ico" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5.5 3 2.5 8l3 5M10.5 3l3 5-3 5M9 2.5 7 13.5"
+                fill="none" stroke="currentColor" stroke-width="1.4"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>调试面板</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <a class="sidebar-link" href="/docs" target="_blank" rel="noopener">API 文档</a>
+      <span class="sidebar-ver">v0.9.3</span>
+    </div>
+  </aside>
+
+  <!-- ================================ 主区 ================================ -->
+  <div class="main">
+
+    <div class="statusbar">
+      <span class="muted" id="health-line">正在读取服务状态…</span>
+    </div>
+
+    <main class="page">
+
+      <!-- ======================== 标签 1：经营看板 ======================== -->
+      <section class="view is-active" id="view-dash">
+        <div class="card filters">
+          <div class="field">
+            <label for="f-start">开始日期</label>
+            <input type="date" id="f-start">
+          </div>
+          <div class="field">
+            <label for="f-end">结束日期</label>
+            <input type="date" id="f-end">
+          </div>
+          <div class="field">
+            <label for="f-store">门店</label>
+            <select id="f-store" disabled><option value="">全部门店</option></select>
+          </div>
+          <div class="field">
+            <label for="f-product">商品</label>
+            <select id="f-product" disabled><option value="">全部商品</option></select>
+          </div>
+          <div class="field field-actions">
+            <button class="btn btn-primary" id="btn-query" type="button">查询</button>
+            <button class="btn" id="btn-reset" type="button">重置区间</button>
+          </div>
+          <div class="field field-note">
+            <span class="muted" id="range-note">—</span>
+          </div>
+        </div>
+
+        <div class="cards" id="metric-cards"></div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>营业额趋势</h2>
+            <span class="muted" id="trend-note"></span>
+          </div>
+          <div class="chart-wrap" id="trend-wrap">
+            <svg id="trend-svg" role="img" aria-label="每日净营业额折线图"></svg>
+            <div class="tooltip" id="trend-tip" hidden></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head">
+              <h2>Top 10 商品</h2>
+              <span class="muted" id="top-note"></span>
+            </div>
+            <div class="table-scroll">
+              <table class="table" id="top-table">
+                <thead>
+                  <tr>
+                    <th>#</th><th>商品</th><th>品类</th>
+                    <th class="num">净营业额</th><th class="num">订单数</th><th class="num">销量</th>
+                  </tr>
+                </thead>
+                <tbody><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>数据质量</h2>
+              <span class="muted" id="dq-note"></span>
+            </div>
+            <div id="dq-body"><p class="muted">加载中…</p></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================== 标签 2：问答 ========================== -->
+      <section class="view" id="view-qa">
+        <div class="card qa-head">
+          <div class="field grow">
+            <label for="qa-input">提问</label>
+            <input type="text" id="qa-input" placeholder="例如：7 月整体的净营业额是多少？" autocomplete="off">
+          </div>
+          <div class="field field-actions">
+            <button class="btn btn-primary" id="btn-ask" type="button">发送</button>
+            <button class="btn" id="btn-new-session" type="button">新会话</button>
+          </div>
+          <div class="field field-note">
+            <span class="muted" id="qa-session"></span>
+          </div>
+        </div>
+        <div id="qa-thread" class="thread"></div>
+      </section>
+
+      <!-- ======================== 标签 3：调试面板 ======================== -->
+      <section class="view" id="view-debug">
+        <div class="card filters">
+          <div class="field grow">
+            <label for="trace-input">trace_id</label>
+            <input type="text" id="trace-input" placeholder="例如：t-20260901-0001" autocomplete="off">
+          </div>
+          <div class="field field-actions">
+            <button class="btn btn-primary" id="btn-load-trace" type="button">加载</button>
+          </div>
+          <div class="field field-note">
+            <span class="muted">问答页每条回答旁的「看调试」会自动填这里。</span>
+          </div>
+        </div>
+        <div id="trace-body"><p class="muted">还没有加载 trace。先去问答页问一句，或直接填一个 trace_id。</p></div>
+      </section>
+
+    </main>
   </div>
-  <nav class="tabs" id="tabs">
-    <button class="tab is-active" type="button" data-tab="dash">经营看板</button>
-    <button class="tab" type="button" data-tab="qa">问答</button>
-    <button class="tab" type="button" data-tab="debug">调试面板</button>
-  </nav>
-</header>
-
-<main class="page">
-
-  <!-- ============================ 标签 1：经营看板 ============================ -->
-  <section class="view is-active" id="view-dash">
-    <div class="card filters">
-      <div class="field">
-        <label for="f-start">开始日期</label>
-        <input type="date" id="f-start">
-      </div>
-      <div class="field">
-        <label for="f-end">结束日期</label>
-        <input type="date" id="f-end">
-      </div>
-      <div class="field">
-        <label for="f-store">门店</label>
-        <select id="f-store" disabled><option value="">全部门店</option></select>
-      </div>
-      <div class="field">
-        <label for="f-product">商品</label>
-        <select id="f-product" disabled><option value="">全部商品</option></select>
-      </div>
-      <div class="field field-actions">
-        <button class="btn btn-primary" id="btn-query" type="button">查询</button>
-        <button class="btn" id="btn-reset" type="button">重置区间</button>
-      </div>
-      <div class="field field-note">
-        <span class="muted" id="range-note">—</span>
-      </div>
-    </div>
-
-    <div class="cards" id="metric-cards"></div>
-
-    <div class="card">
-      <div class="card-head">
-        <h2>营业额趋势</h2>
-        <span class="muted" id="trend-note"></span>
-      </div>
-      <div class="chart-wrap" id="trend-wrap">
-        <svg id="trend-svg" role="img" aria-label="每日净营业额折线图"></svg>
-        <div class="tooltip" id="trend-tip" hidden></div>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-head">
-          <h2>Top 10 商品</h2>
-          <span class="muted" id="top-note"></span>
-        </div>
-        <div class="table-scroll">
-          <table class="table" id="top-table">
-            <thead>
-              <tr>
-                <th>#</th><th>商品</th><th>品类</th>
-                <th class="num">净营业额</th><th class="num">订单数</th><th class="num">销量</th>
-              </tr>
-            </thead>
-            <tbody><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head">
-          <h2>数据质量</h2>
-          <span class="muted" id="dq-note"></span>
-        </div>
-        <div id="dq-body"><p class="muted">加载中…</p></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================== 标签 2：问答 ============================== -->
-  <section class="view" id="view-qa">
-    <div class="card qa-head">
-      <div class="field grow">
-        <label for="qa-input">提问</label>
-        <input type="text" id="qa-input" placeholder="例如：7 月整体的净营业额是多少？" autocomplete="off">
-      </div>
-      <div class="field field-actions">
-        <button class="btn btn-primary" id="btn-ask" type="button">发送</button>
-        <button class="btn" id="btn-new-session" type="button">新会话</button>
-      </div>
-      <div class="field field-note">
-        <span class="muted" id="qa-session"></span>
-      </div>
-    </div>
-    <div id="qa-thread" class="thread"></div>
-  </section>
-
-  <!-- ============================ 标签 3：调试面板 ============================ -->
-  <section class="view" id="view-debug">
-    <div class="card filters">
-      <div class="field grow">
-        <label for="trace-input">trace_id</label>
-        <input type="text" id="trace-input" placeholder="例如：t-20260901-0001" autocomplete="off">
-      </div>
-      <div class="field field-actions">
-        <button class="btn btn-primary" id="btn-load-trace" type="button">加载</button>
-      </div>
-      <div class="field field-note">
-        <span class="muted">问答页每条回答旁的「看调试」会自动填这里。</span>
-      </div>
-    </div>
-    <div id="trace-body"><p class="muted">还没有加载 trace。先去问答页问一句，或直接填一个 trace_id。</p></div>
-  </section>
-
-</main>
+</div>
 
 <script src="/static/js/util.js"></script>
 <script src="/static/js/dashboard.js"></script>

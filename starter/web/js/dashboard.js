@@ -62,7 +62,7 @@ var Dashboard = (function () {
     if (!days.length) {
       svg.appendChild(svgNode('text', {
         x: width / 2, y: height / 2, 'text-anchor': 'middle',
-        fill: '#5b6779', 'font-size': '13'
+        fill: '#94a3b8', 'font-size': '13'
       }, '当前筛选区间内没有数据'));
       return;
     }
@@ -84,18 +84,20 @@ var Dashboard = (function () {
       return pad.top + plotH - ratio * plotH;
     }
 
-    // 网格线与 Y 轴刻度
-    var ticks = 5;
+    // 网格线与 Y 轴刻度。
+    // 只画 4 条极浅的横线：123 天的折线本身已经很密，网格线一多整张图就糊了。
+    // 基线略深一点，用来交代「0 在哪」。
+    var ticks = 4;
     for (var t = 0; t <= ticks; t += 1) {
       var value = scaleMax * t / ticks;
       var y = py(value);
       svg.appendChild(svgNode('line', {
         x1: pad.left, x2: pad.left + plotW, y1: y, y2: y,
-        stroke: t === 0 ? '#c3cddf' : '#eef1f7', 'stroke-width': 1
+        stroke: t === 0 ? '#dbe2ec' : '#f2f5fa', 'stroke-width': 1
       }));
       svg.appendChild(svgNode('text', {
         x: pad.left - 8, y: y + 4, 'text-anchor': 'end',
-        fill: '#5b6779', 'font-size': '11'
+        fill: '#94a3b8', 'font-size': '11'
       }, U.compact(value)));
     }
 
@@ -104,12 +106,12 @@ var Dashboard = (function () {
     for (var i = 0; i < days.length; i += labelStep) {
       svg.appendChild(svgNode('text', {
         x: px(i), y: pad.top + plotH + 18, 'text-anchor': 'middle',
-        fill: '#5b6779', 'font-size': '11'
+        fill: '#94a3b8', 'font-size': '11'
       }, U.shortDate(days[i].date)));
     }
     svg.appendChild(svgNode('text', {
       x: pad.left + plotW, y: pad.top + plotH + 18, 'text-anchor': 'end',
-      fill: '#5b6779', 'font-size': '11'
+      fill: '#94a3b8', 'font-size': '11'
     }, days.length + ' 天'));
 
     // 折线 + 面积
@@ -123,10 +125,10 @@ var Dashboard = (function () {
       var area = line
         + ' L' + points[points.length - 1][0].toFixed(2) + ' ' + (pad.top + plotH).toFixed(2)
         + ' L' + points[0][0].toFixed(2) + ' ' + (pad.top + plotH).toFixed(2) + ' Z';
-      svg.appendChild(svgNode('path', { d: area, fill: 'rgba(47, 91, 215, .10)', stroke: 'none' }));
+      svg.appendChild(svgNode('path', { d: area, fill: 'rgba(59, 91, 219, .07)', stroke: 'none' }));
     }
     svg.appendChild(svgNode('path', {
-      d: line, fill: 'none', stroke: '#2f5bd7', 'stroke-width': 2,
+      d: line, fill: 'none', stroke: '#3b5bdb', 'stroke-width': 2,
       'stroke-linejoin': 'round', 'stroke-linecap': 'round'
     }));
 
@@ -135,7 +137,7 @@ var Dashboard = (function () {
       points.forEach(function (point) {
         svg.appendChild(svgNode('circle', {
           cx: point[0], cy: point[1], r: 2.6, fill: '#fff',
-          stroke: '#2f5bd7', 'stroke-width': 1.6
+          stroke: '#3b5bdb', 'stroke-width': 1.6
         }));
       });
     }
@@ -143,10 +145,10 @@ var Dashboard = (function () {
     // 悬停辅助元素
     var guide = svgNode('line', {
       x1: 0, x2: 0, y1: pad.top, y2: pad.top + plotH,
-      stroke: '#2f5bd7', 'stroke-width': 1, 'stroke-dasharray': '4 3', opacity: 0
+      stroke: '#3b5bdb', 'stroke-width': 1, 'stroke-dasharray': '4 3', opacity: 0
     });
     var marker = svgNode('circle', {
-      cx: 0, cy: 0, r: 4.5, fill: '#2f5bd7', stroke: '#fff', 'stroke-width': 2, opacity: 0
+      cx: 0, cy: 0, r: 4.5, fill: '#3b5bdb', stroke: '#fff', 'stroke-width': 2, opacity: 0
     });
     svg.appendChild(guide);
     svg.appendChild(marker);
