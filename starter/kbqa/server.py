@@ -6,10 +6,12 @@ import json
 from datetime import date
 from typing import Any, Optional
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import webui
 from .service import Service
 
 app = FastAPI(title="经营看板 + 问答服务", version="0.9.3")
@@ -34,11 +36,6 @@ def _as_text(value: Any) -> str:
     if isinstance(value, (str, int, float, bool)):
         return str(value).strip()
     return json.dumps(value, ensure_ascii=False)
-
-
-class ChatRequest(BaseModel):
-    session_id: Optional[Any] = None
-    question: Optional[Any] = None
 
 
 class RetrieveRequest(BaseModel):
@@ -86,15 +83,51 @@ def metrics_daily(
     return bad or service().metrics_daily(start, end, store_id, product_id)
 
 
+@app.get("/api/metrics/top_products")
+def metrics_top_products(
+    start: str = Query(...),
+    end: str = Query(...),
+    store_id: Optional[str] = None,
+    limit: int = Query(10, ge=1, le=100),
+):
+    """看板用的商品排行，直接转发给 `tools.top_products`。"""
+    bad = _bad_date(start, end)
+    return bad or service().tools.top_products(start, end, store_id, limit)
+
+
+@app.get("/api/stores")
+def stores() -> dict:
+    """门店下拉框的数据源：前端不再需要写死任何门店。"""
+    return {"stores": service().tools.stores()}
+
+
+@app.get("/api/products")
+def products() -> dict:
+    """商品下拉框的数据源。"""
+    return {"products": service().tools.products()}
+
+
 @app.post("/api/retrieve")
 def retrieve(request: RetrieveRequest) -> dict:
     return service().retrieve(_as_text(request.query), request.top_k)
 
 
 @app.post("/api/chat")
-def chat(request: ChatRequest) -> dict:
-    session_id = _as_text(request.session_id) or None
-    return service().chat(session_id, _as_text(request.question))
+async def chat(request: Request) -> dict:
+    """契约 §5：无论内部发生什么错误，这个接口都必须返回 HTTP 200 和合法 JSON。
+
+    所以这里**不**把请求体声明成 Pydantic 模型：请求体不是 JSON 对象时
+    （数组、裸字符串、非法 JSON），FastAPI 会在进入这个函数之前就返回 422，
+    而契约要求这种情况也走 200。自己读、自己兜底。
+    """
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001 - 请求体坏掉也要给 200
+        payload = None
+    if not isinstance(payload, dict):
+        payload = {}
+    session_id = _as_text(payload.get("session_id")) or None
+    return service().chat(session_id, _as_text(payload.get("question")))
 
 
 @app.get("/api/trace/{trace_id}")
@@ -114,3 +147,15 @@ def data_quality() -> dict:
         "data_period": current.data_period,
         "kb_warnings": current.index.warnings,
     }
+
+
+@app.get("/")
+def index():
+    """看板首页。静态文件全部相对 `kbqa` 包定位，见 `webui.py`。"""
+    return webui.index_response()
+
+
+# 静态资源挂载放在所有 API 路由之后，避免遮挡 `/api/*`。
+# 目录不存在时（比如只把 `kbqa/` 拷出去跑）跳过挂载，服务照常起得来。
+if webui.WEB_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(webui.WEB_DIR)), name="static")
