@@ -177,6 +177,50 @@ class DataTools:
             cursor += timedelta(days=1)
         return {"days": days}
 
+    def monthly_metrics(self, start: str, end: str, store_id=None, product_id=None) -> dict:
+        """按自然月拆分区间，逐月给出 §4 的五个指标。
+
+        「五月到八月这四个月里，退款金额最高的一个月退了多少」这类跨月比较，
+        靠单区间的汇总答不了，得先把区间按月切开。
+        月份用 `YYYY-MM` 标识；区间两端不足整月的按实际天数截断。
+        """
+        where, params = self._where(start, end, store_id, product_id)
+        rows = self.conn.execute(
+            """
+            SELECT substr(date, 1, 7) AS month,
+                   COALESCE(SUM(amount_cents), 0),
+                   COALESCE(-SUM(CASE WHEN amount_cents < 0 THEN amount_cents ELSE 0 END), 0),
+                   COUNT(DISTINCT CASE WHEN amount_cents > 0 THEN order_id END),
+                   COALESCE(SUM(CASE WHEN amount_cents > 0 THEN qty
+                                     WHEN amount_cents < 0 THEN -qty
+                                     ELSE 0 END), 0)
+            FROM sales_clean WHERE %s GROUP BY month ORDER BY month
+            """
+            % where,
+            params,
+        ).fetchall()
+        months = []
+        for month, net_cents, refund_cents, orders, qty in rows:
+            orders = int(orders)
+            net_cents = int(net_cents)
+            months.append(
+                {
+                    "month": month,
+                    "net_revenue": yuan(net_cents),
+                    "refund_amount": yuan(int(refund_cents)),
+                    "orders": orders,
+                    "aov": round2(Decimal(net_cents) / 100 / orders) if orders else None,
+                    "qty": int(qty),
+                }
+            )
+        return {
+            "start": start,
+            "end": end,
+            "store_id": store_id,
+            "product_id": product_id,
+            "months": months,
+        }
+
     def payment_mix(self, start: str, end: str, store_id=None) -> dict:
         """各支付方式的订单数、金额与占比。"""
         where, params = self._where(start, end, store_id)

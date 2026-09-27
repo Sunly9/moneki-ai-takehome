@@ -484,3 +484,35 @@ def test_run_tool_still_rejects_writes(real_service):
     for statement in ("DELETE FROM sales_clean", "DROP TABLE sales_clean", "UPDATE sales_clean SET qty=1"):
         result = real_service.run_tool("run_sql", {"sql": statement})
         assert "error" in result, statement
+
+
+# --- 跨月取极值 ---------------------------------------------------------------
+
+
+def test_monthly_metrics_splits_by_calendar_month(real_service):
+    """按自然月拆分，逐月给出五个指标。"""
+    result = real_service.tools.monthly_metrics("2026-05-01", "2026-08-31")
+    months = [row["month"] for row in result["months"]]
+    assert months == ["2026-05", "2026-06", "2026-07", "2026-08"]
+    by_month = {row["month"]: row for row in result["months"]}
+    assert by_month["2026-05"]["refund_amount"] == 1192.0
+    assert by_month["2026-06"]["net_revenue"] == 156757.0
+
+
+def test_month_rank_answers_cross_month_max(real_client):
+    """「四个月里退款金额最高的一个月退了多少」要给出极值所在的月份与金额。"""
+    body = real_client.post(
+        "/api/chat",
+        json={"session_id": "t-month-rank", "question": "五月到八月这四个月里，退款金额最高的一个月退了多少？"},
+    ).json()
+    assert body["answer_type"] in ("data", "hybrid"), body["answer_type"]
+    assert "1192" in body["answer"].replace(",", "")
+    assert "2026-05" in body["answer"]
+    assert body["data_evidence"], "数据类回答必须给出查询证据"
+
+
+def test_month_rank_does_not_hijack_other_rank_questions(real_service):
+    """跨月极值不能抢走商品排行和品类排行的路由。"""
+    assert real_service.planner.plan("7 月哪个商品卖得最好？").kind == "top_products"
+    assert real_service.planner.plan("五月到八月这四个月，哪个品类的门店净营业额最高？多少钱？").kind == "category"
+    assert real_service.planner.plan("8 月的净营业额是多少？").kind == "summary"

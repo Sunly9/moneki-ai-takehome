@@ -155,3 +155,26 @@ def describe_daily(result: dict, scope: str, limit: int = 7) -> str:
     pieces = ["%s %s 元" % (day["date"], money(day["net_revenue"])) for day in shown]
     tail = "（共 %d 天，只列前 %d 天）" % (len(days), len(shown)) if len(days) > len(shown) else ""
     return "%s 每日净营业额：%s。%s" % (scope, "，".join(pieces), tail)
+
+
+def describe_month_rank(result: dict, metric: str, scope: str) -> str:
+    """跨月取极值：这个指标最高的一个月是哪个月、值多少。"""
+    months = result.get("months") or []
+    if not months:
+        return "%s：区间内没有数据。" % scope
+    label = METRIC_LABELS.get(metric, metric)
+    ranked = sorted(
+        months,
+        key=lambda item: item.get(metric) if item.get(metric) is not None else float("-inf"),
+        reverse=True,
+    )
+    best = ranked[0]
+    line = "%s：%s最高的是 %s，为 %s。" % (
+        scope, label, best["month"], metric_value(metric, best)
+    )
+    if len(ranked) > 1:
+        rest = "、".join(
+            "%s %s" % (item["month"], metric_value(metric, item)) for item in ranked[1:5]
+        )
+        line += "其余各月依次为 %s。" % rest
+    return line

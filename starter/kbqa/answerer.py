@@ -303,6 +303,12 @@ class Answerer(HybridAnswers):
                 (name for name in result.get("payments", {}) if name in plan.standalone), ""
             )
             text = render.describe_payment(result, scope, focus)
+        elif plan.kind == "month_rank":
+            result = self._call(
+                evidence, "monthly_metrics", start=start, end=end,
+                store_id=plan.store_id, product_id=plan.product_id,
+            )
+            text = render.describe_month_rank(result, plan.metric, scope)
         elif plan.kind == "top_products":
             result = self._call(
                 evidence, "top_products", start=start, end=end, store_id=plan.store_id, limit=10

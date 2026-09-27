@@ -21,6 +21,14 @@ INTENT_KEYWORDS = {
 }
 
 
+
+def _spans_months(window) -> bool:
+    """这个区间横跨一个以上的自然月吗。"""
+    if not window:
+        return False
+    return window[0][:7] != window[1][:7]
+
+
 @dataclass
 class Plan:
     question: str
@@ -264,6 +272,10 @@ class Planner:
         elif E.has_any(text, E.STORE_WORDS) and not plan.store_id:
             # “各门店 7 月营业额分别是多少”没有排名词，但要的就是分店明细。
             plan.kind, plan.intent = "by_store", "data"
+        elif asks_rank and _spans_months(plan.window) and E.has_any(text, ("月",)):
+            # 「五月到八月这四个月里，退款金额最高的一个月退了多少」
+            # 问的是跨月的极值，不是商品排行。
+            plan.kind, plan.intent = "month_rank", "data"
         elif asks_rank:
             plan.kind, plan.intent = "top_products", "data"
         elif E.has_any(text, E.DAILY_WORDS):
