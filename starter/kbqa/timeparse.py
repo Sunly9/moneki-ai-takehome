@@ -88,10 +88,39 @@ def _clamp_day(year: int, month: int, day: int) -> date:
     return date(year, month, min(max(day, 1), last))
 
 
+#: KB-001 §2.2：旧 POS 导出格式 `DD-MM-YYYY`，**日在前、月在后**
+#: （`25-07-2026` 是 2026 年 7 月 25 日）。数据里有 80 行这种写法，
+#: 问句里也会出现（“25-07-2026 那天卖了多少”）。
+#: `_FULL_DATE` 只认「年在最前」，而 `_RANGE` 又把 `-` 当区间分隔符，
+#: 于是这种日期会被静默忽略、按全区间作答 —— 不报错、不拒答，最危险。
+#: 先把它改写成 ISO 再交给后面的解析。
+_DAY_FIRST_DATE = re.compile(r"(?<![\d-])(\d{1,2})-(\d{1,2})-(20\d{2})(?![\d-])")
+
+
+def normalise_day_first_dates(text: str) -> str:
+    """把 `DD-MM-YYYY` 改写成 `YYYY-MM-DD`；月/日越界的原样留着，交给后面判。"""
+
+    def replace(match):
+        day, month, year = (int(part) for part in match.groups())
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            return match.group(0)
+
+    return _DAY_FIRST_DATE.sub(replace, text)
+
+
 def parse_time(text: str, today: date) -> TimeSpec:
     """把问句里的时间说法解析成闭区间。找不到时间就返回空的 TimeSpec。"""
     spec = TimeSpec()
-    cleaned = text.replace(" ", "")
+    # 去掉空白之前，先护住「编号紧跟数字」的位置。
+    # “S02 7 月的净营业额”去掉空格会变成 “s027月的净营业额”，
+    # 月份正则的 \d{1,2} 贪婪匹配到 “27”，月=27 非法，整个时间窗口就没了
+    # —— 日期被静默忽略、按全区间作答。这里把那个空格换成不换行空格，
+    # 它在 Unicode 模式下仍算 \s（各处正则的 \s* 照样匹配），但不会被
+    # 下面的 replace(" ", "") 吃掉。
+    guarded = re.sub(r"(?<=[0-9a-z])\s+(?=\d)", "\u00a0", text)
+    cleaned = normalise_day_first_dates(guarded.replace(" ", "").replace("\u00a0", " "))
     year_match = _YEAR.search(cleaned)
     year = int(year_match.group(1)) if year_match else None
     if "去年" in cleaned:
