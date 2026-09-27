@@ -81,8 +81,18 @@ TOOLS = [
     ),
     _fn(
         "run_sql",
-        "在清洗表上执行一条 SQL，工具覆盖不到的查法用这个。",
-        {"sql": {"type": "string", "description": "要执行的 SQL 语句"}},
+        "在清洗表上执行一条**只读** SELECT 查询。结构化工具覆盖不到的查法才用它。\n"
+        "可用的表只有下面这四张，没有别的表名，写错表名会被数据库拒绝：\n"
+        "  sales_clean(order_id, date, store_id, product_id, qty, amount_cents, payment, is_refund)\n"
+        "    · date 是 TEXT，格式 YYYY-MM-DD；amount_cents 是「分」，不是元\n"
+        "    · amount_cents > 0 是销售行，< 0 是退款行\n"
+        "    · 净营业额 = SUM(amount_cents)；销量 = 销售行 qty 之和减退款行 qty 之和\n"
+        "    · 有效订单数 = 销售行里 COUNT(DISTINCT order_id)\n"
+        "  stores(store_id, store_name, category, district)\n"
+        "  products(product_id, product_name, product_category, unit_price)\n"
+        "  meta(key, value)\n"
+        "只允许单条 SELECT / WITH 开头且带 FROM 的查询；写操作一律被拒绝。",
+        {"sql": {"type": "string", "description": "一条 SELECT 语句"}},
         ["sql"],
     ),
     _fn(

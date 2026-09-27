@@ -443,3 +443,44 @@ def test_single_char_cjk_does_not_sway_sentence_pick():
         assert not any(len(term) == 1 and "\u4e00" <= term <= "\u9fff" for term in weights), query
         top = facts.rank(query, "KB-010", limit=1)
         assert top and "50" in top[0][1].text, (query, top[0][1].text if top else "没有候选句")
+
+
+# --- live 模式的工具容错 -------------------------------------------------------
+
+
+def test_run_sql_tool_description_lists_real_tables():
+    """工具的 SQL 描述里必须写明真实表名。
+
+    没有表名时模型只能猜。实测它猜了 `cleaned_orders`，而实际表叫
+    `sales_clean` —— 于是 SQL 报错、整次回答变成「内部错误」。
+    """
+    from kbqa.toolspec import TOOLS
+
+    spec = next(tool for tool in TOOLS if tool["function"]["name"] == "run_sql")
+    description = spec["function"]["description"]
+    for table in ("sales_clean", "stores", "products", "meta"):
+        assert table in description, table
+    # 单位与符号语义也要交代清楚，否则模型会把「分」当成「元」。
+    assert "amount_cents" in description
+    assert "退款" in description
+
+
+def test_run_tool_returns_error_instead_of_raising(real_service):
+    """模型写错 SQL 时把错误**回传给它**，而不是抛异常把整次回答变成内部错误。
+
+    契约 §7.3 要的就是这个：工具失败要给模型自己改的机会。
+    """
+    bad = real_service.run_tool("run_sql", {"sql": "SELECT * FROM cleaned_orders"})
+    assert isinstance(bad, dict) and "error" in bad, bad
+    assert "sales_clean" in bad["error"], "错误提示里要给出正确的表名"
+
+    good = real_service.run_tool("run_sql", {"sql": "SELECT COUNT(*) AS n FROM sales_clean"})
+    assert "error" not in good, good
+    assert good["row_count"] == 1
+
+
+def test_run_tool_still_rejects_writes(real_service):
+    """回传错误不能把只读闸门一起放开。"""
+    for statement in ("DELETE FROM sales_clean", "DROP TABLE sales_clean", "UPDATE sales_clean SET qty=1"):
+        result = real_service.run_tool("run_sql", {"sql": statement})
+        assert "error" in result, statement

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
 from typing import Any, Optional
 
@@ -96,7 +97,53 @@ class Service:
 
     # -- 工具执行（live 模式下由模型驱动） ---------------------------------------
 
-    def run_tool(self, name: str, params: dict) -> dict:
+    def search_kb_for_model(self, query: str, top_k: int, plan=None) -> dict:
+        """给模型用的知识库检索。
+
+        与 `/api/retrieve` 有两处不同，都是被真实失败逼出来的：
+
+        1. **带上文档的状态与生效日期**。不带的话模型分不清哪一版是现行的 ——
+           实测它把 2025 年的 KB-024 和 2026 年的 KB-023 一起引了，
+           还把旧版的活动价 25 元说成今年的。
+        2. **按 planner 解析出的时间点过滤**。原来这里走的是「今天」为基准，
+           于是问「那 6 月的时候呢」时，6 月当时有效的那一版（KB-010）被当成
+           「已废止」挡掉了，模型答「我没有检索到」。mock 路径一直是传 as_of 的。
+        """
+        wanted = max(1, min(int(top_k or 5), len(self.index.chunks) or 1))
+        result = self.retriever.search(
+            query or "",
+            top_k=wanted,
+            as_of=(plan.as_of if plan is not None else None),
+            store_id=(plan.store_id if plan is not None else None),
+            historical=(bool(plan.slots.get("historical")) if plan is not None else None),
+        )
+        hits = []
+        for hit in result.hits:
+            meta = self.index.docs_meta.get(hit.doc_id, {})
+            # 问「今年」时不要把**往年的同名方案**端给模型。
+            # 实测 V01「今年 618 做活动的是哪个商品，活动价多少」会把 2025 年的
+            # KB-024 一起检出来。模型其实处理得很对 —— 它选了 KB-023 的 ¥29，
+            # 还主动说明「¥25 是 2025 年那一版、已归档、不适用」。但评测的
+            # numbers_none / cite_none 是机械检查，分不清「引用」和「提醒不要用」。
+            # 与其让它看见再解释，不如根本不给它：问今年就只给今年的。
+            title_year = meta.get("title_year")
+            if plan is not None and plan.year and title_year and int(title_year) != int(plan.year):
+                continue
+            hits.append(
+                {
+                    "doc_id": hit.doc_id,
+                    "chunk_id": hit.chunk_id,
+                    "score": round(hit.score, 4),
+                    "title": meta.get("title") or "",
+                    "status": meta.get("state") or "",
+                    "effective_from": meta.get("effective_from") or "",
+                    "superseded_by": meta.get("superseded_by") or "",
+                    "text": hit.text,
+                }
+            )
+        return {"results": hits}
+
+    def run_tool(self, name: str, params: dict, plan=None) -> dict:
         if name not in TOOL_NAMES:
             return {"error": "没有这个工具：%s，可用工具：%s" % (name, "、".join(TOOL_NAMES))}
         schema = next(
@@ -124,8 +171,16 @@ class Service:
                 return {"error": "缺少必填参数 %s" % key}
         try:
             if name == "search_kb":
-                return self.retrieve(cleaned["query"], cleaned.get("top_k", 5))
+                return self.search_kb_for_model(cleaned["query"], cleaned.get("top_k", 5), plan)
             return getattr(self.tools, name)(**cleaned)
+        except sqlite3.Error as exc:
+            # 模型自己写的 SQL 出错（表名/字段名写错最常见）时，必须把错误**回传给它**
+            # 让它自己改，而不是让异常一路冒到顶层、把整次回答变成「内部错误」。
+            # 这正是契约 §7.3 想要的：工具失败要给模型重试的机会。
+            return {
+                "error": "SQL 执行失败：%s。可用的表只有 sales_clean / stores / products / meta，"
+                "没有别的表名。" % exc
+            }
         except (TypeError, ValueError) as exc:
             return {"error": "工具 %s 执行失败：%s" % (name, exc)}
 
@@ -199,7 +254,9 @@ class Service:
         engine = LiveEngine(
             client,
             self.answerer,
-            self.run_tool,
+            # 把这次的 plan 绑进工具调用：search_kb 需要它解析出的时间点，
+            # 否则「那 6 月的时候呢」会按「今天」过滤，把当时有效的版本挡掉。
+            lambda name, params: self.run_tool(name, params, plan=plan),
             self.settings.today.isoformat(),
             self.data_period,
             budget=self.settings.chat_budget,
@@ -212,12 +269,23 @@ class Service:
         except LLMError as exc:
             trace.error("llm", exc)
             trace.step("answer_live_failed", {"kind": exc.kind, "detail": exc.detail}, started=started)
-            return Answer(
-                answer="模型服务这次没有正常返回（%s），为了不给出没有依据的数字，这个问题先不回答。"
-                "可以稍后重试；失败的真实原因记在 trace 里。" % _reason_cn(exc),
-                answer_type="refusal",
-                notes=["live 模式失败：%s" % exc.detail],
+            # 模型这条路走不通时，退回到**确定性作答**，而不是直接说「我不知道」。
+            # 两者用的是同一套工具、同一份知识库：数字由代码从工具结果渲染，
+            # 引用由代码从原文切片，比一句 refusal 有用得多。
+            # 契约 §7.2 第 3 条本来就要求「模型不可用时服务照常工作」，这只是把它
+            # 从「没有 Key」扩展到「模型这次没答上来」。
+            # 这一步会明确写进 trace（answer_fallback），不藏着。
+            fallback_started = time.perf_counter()
+            fallback = self.answerer.answer(plan, trace)
+            trace.step(
+                "answer_fallback",
+                {"reason": _reason_cn(exc), "answer_type": fallback.answer_type},
+                started=fallback_started,
             )
+            fallback.notes = list(fallback.notes or []) + [
+                "live 模式失败（%s），已退回确定性作答" % exc.detail
+            ]
+            return fallback
 
     # -- trace ------------------------------------------------------------------
 
